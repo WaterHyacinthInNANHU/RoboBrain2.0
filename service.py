@@ -7,6 +7,7 @@ import tempfile
 import os
 import shutil
 import argparse
+import re
 from inference import UnifiedInference
 
 class InferenceRequest(BaseModel):
@@ -22,6 +23,10 @@ class InferenceResponse(BaseModel):
     answer: str
     thinking: Optional[str] = None
     plot_path: Optional[str] = None
+    # Structured data based on task type
+    points: Optional[List[List[int]]] = None  # For pointing task: [[x1, y1], [x2, y2], ...]
+    trajectory: Optional[List[List[int]]] = None  # For trajectory task: [[x1, y1], [x2, y2], ...]
+    bounding_boxes: Optional[List[List[int]]] = None  # For affordance/grounding: [[x1, y1, x2, y2], ...]
 
 class ModelConfig(BaseModel):
     model_id: str = "BAAI/RoboBrain2.0-7B"
@@ -41,6 +46,35 @@ async def lifespan(app: FastAPI):
     inference_model = None
 
 app = FastAPI(title="RoboBrain2.0 Inference Service", version="1.0.0", lifespan=lifespan)
+
+def parse_structured_data(answer_text: str, task: str):
+    """Extract structured data from answer text based on task type"""
+    points = None
+    trajectory = None
+    bounding_boxes = None
+    
+    if task == "pointing":
+        # Extract points in format [(x1, y1), (x2, y2), ...]
+        point_pattern = r'\(\s*(\d+)\s*,\s*(\d+)\s*\)'
+        matches = re.findall(point_pattern, answer_text)
+        if matches:
+            points = [[int(x), int(y)] for x, y in matches]
+    
+    elif task == "trajectory":
+        # Extract trajectory points in format [[x1, y1], [x2, y2], ...] or (x1, y1), (x2, y2)
+        trajectory_pattern = r'(\d+),\s*(\d+)'
+        matches = re.findall(trajectory_pattern, answer_text)
+        if matches:
+            trajectory = [[int(x), int(y)] for x, y in matches]
+    
+    elif task in ["affordance", "grounding"]:
+        # Extract bounding boxes in format [x1, y1, x2, y2]
+        box_pattern = r'\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]'
+        matches = re.findall(box_pattern, answer_text)
+        if matches:
+            bounding_boxes = [[int(x1), int(y1), int(x2), int(y2)] for x1, y1, x2, y2 in matches]
+    
+    return points, trajectory, bounding_boxes
 
 @app.post("/initialize", response_model=dict)
 async def initialize_model(config: ModelConfig):
@@ -75,10 +109,16 @@ async def run_inference(request: InferenceRequest):
             temperature=request.temperature
         )
         
+        # Parse structured data from the answer
+        points, trajectory, bounding_boxes = parse_structured_data(result["answer"], request.task)
+        
         response = InferenceResponse(
             answer=result["answer"],
             thinking=result.get("thinking"),
-            plot_path=None
+            plot_path=None,
+            points=points,
+            trajectory=trajectory,
+            bounding_boxes=bounding_boxes
         )
         
         return response
@@ -118,10 +158,16 @@ async def run_inference_with_upload(
         for temp_path in temp_paths:
             os.unlink(temp_path)
         
+        # Parse structured data from the answer
+        points, trajectory, bounding_boxes = parse_structured_data(result["answer"], task)
+        
         response = InferenceResponse(
             answer=result["answer"],
             thinking=result.get("thinking"),
-            plot_path=None
+            plot_path=None,
+            points=points,
+            trajectory=trajectory,
+            bounding_boxes=bounding_boxes
         )
         
         return response

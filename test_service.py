@@ -40,6 +40,12 @@ def test_service():
         print(f"Answer: {result['answer'][:100]}...")
         if result.get('thinking'):
             print(f"Thinking: {result['thinking'][:100]}...")
+        if result.get('points'):
+            print(f"Points: {result['points']}")
+        if result.get('trajectory'):
+            print(f"Trajectory: {result['trajectory']}")
+        if result.get('bounding_boxes'):
+            print(f"Bounding boxes: {result['bounding_boxes']}")
     except Exception as e:
         print(f"✗ Inference failed: {e}")
     
@@ -62,6 +68,12 @@ def test_service():
                 enable_thinking=False
             )
             print(f"✓ Task '{task}' completed: {result['answer'][:50]}...")
+            if result.get('points'):
+                print(f"  Points: {result['points']}")
+            if result.get('trajectory'):
+                print(f"  Trajectory: {result['trajectory']}")
+            if result.get('bounding_boxes'):
+                print(f"  Bounding boxes: {result['bounding_boxes']}")
         except Exception as e:
             print(f"✗ Task '{task}' failed: {e}")
     
