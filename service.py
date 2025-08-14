@@ -10,6 +10,12 @@ import argparse
 import re
 from inference import UnifiedInference
 
+
+MODEL_ID = "BAAI/RoboBrain2.0-7B"
+DEVICE_MAP = "auto"
+
+
+
 class InferenceRequest(BaseModel):
     text: str
     image_urls: Optional[List[str]] = None
@@ -33,14 +39,13 @@ class ModelConfig(BaseModel):
     device_map: str = "auto"
 
 inference_model = None
-config_args = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global inference_model
     inference_model = UnifiedInference(
-        model_id=config_args.model_id,
-        device_map=config_args.device_map
+        model_id=MODEL_ID,
+        device_map=DEVICE_MAP
     )
     yield
     inference_model = None
@@ -191,25 +196,20 @@ async def get_model_info():
         "supports_thinking": inference_model.supports_thinking
     }
 
-if __name__ == "__main__":
+
+def run():
     parser = argparse.ArgumentParser(description="RoboBrain2.0 Inference Service")
-    parser.add_argument("--model_id", type=str, default="BAAI/RoboBrain2.0-7B", 
-                       help="Model ID or path (default: BAAI/RoboBrain2.0-7B)")
-    parser.add_argument("--device_map", type=str, default="auto",
-                       help="Device mapping strategy (default: auto)")
     parser.add_argument("--host", type=str, default="0.0.0.0",
                        help="Host to bind to (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8000,
                        help="Port to bind to (default: 8000)")
     parser.add_argument("--reload", action="store_true",
                        help="Enable auto-reload")
-    
+
     config_args = parser.parse_args()
     
-    print(f"Starting RoboBrain2.0 service with:")
-    print(f"  Model ID: {config_args.model_id}")
-    print(f"  Device Map: {config_args.device_map}")
-    print(f"  Host: {config_args.host}")
-    print(f"  Port: {config_args.port}")
-    
     uvicorn.run("service:app", host=config_args.host, port=config_args.port, reload=config_args.reload)
+    
+    
+if __name__ == "__main__":
+    run()
