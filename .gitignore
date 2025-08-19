@@ -130,3 +130,5 @@ dmypy.json
 # 2.0
 result/
 test.py
+sam2
+checkpoints

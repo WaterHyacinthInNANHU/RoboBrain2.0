@@ -8,45 +8,62 @@ import os
 import shutil
 import argparse
 import re
+from dataclasses import dataclass
 from inference import UnifiedInference
+
+import numpy as np
+from sam2.build_sam import build_sam2
+from sam2.sam2_image_predictor import SAM2ImagePredictor
+import io
+from PIL import Image
+
+from utils import show_masks, read_image
 
 
 MODEL_ID = "BAAI/RoboBrain2.0-7B"
 DEVICE_MAP = "auto"
 
 
-
+# @dataclass
 class InferenceRequest(BaseModel):
     text: str
-    image_urls: Optional[List[str]] = None
+    image: str
     task: str = "general"
     plot: bool = False
     enable_thinking: Optional[bool] = None
     do_sample: bool = True
     temperature: float = 0.7
-
+    
+# @dataclass
 class InferenceResponse(BaseModel):
     answer: str
     thinking: Optional[str] = None
-    plot_path: Optional[str] = None
     # Structured data based on task type
     points: Optional[List[List[int]]] = None  # For pointing task: [[x1, y1], [x2, y2], ...]
     trajectory: Optional[List[List[int]]] = None  # For trajectory task: [[x1, y1], [x2, y2], ...]
     bounding_boxes: Optional[List[List[int]]] = None  # For affordance/grounding: [[x1, y1, x2, y2], ...]
+    mask: Optional[List[List[List[int]]]] = None  # For mask task
 
+# @dataclass
 class ModelConfig(BaseModel):
     model_id: str = "BAAI/RoboBrain2.0-7B"
     device_map: str = "auto"
 
 inference_model = None
+sam2_predictor = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global inference_model
+    global inference_model, sam2_predictor
     inference_model = UnifiedInference(
         model_id=MODEL_ID,
         device_map=DEVICE_MAP
     )
+
+    sam2_checkpoint = "../checkpoints/sam2.1_hiera_large.pt"
+    model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+    sam2_model = build_sam2(model_cfg, sam2_checkpoint, device='cuda')
+    sam2_predictor = SAM2ImagePredictor(sam2_model)
     yield
     inference_model = None
 
@@ -62,6 +79,7 @@ def parse_structured_data(answer_text: str, task: str):
         # Extract points in format [(x1, y1), (x2, y2), ...]
         point_pattern = r'\(\s*(\d+)\s*,\s*(\d+)\s*\)'
         matches = re.findall(point_pattern, answer_text)
+        print(f"Matches for points: {matches}")
         if matches:
             points = [[int(x), int(y)] for x, y in matches]
     
@@ -98,89 +116,48 @@ async def run_inference(request: InferenceRequest):
     if inference_model is None:
         raise HTTPException(status_code=500, detail="Model not initialized")
     
-    try:
-        if request.image_urls:
-            images = request.image_urls
-        else:
-            raise HTTPException(status_code=400, detail="No images provided")
-        
-        result = inference_model.inference(
-            text=request.text,
-            image=images,
-            task=request.task,
-            plot=request.plot,
-            enable_thinking=request.enable_thinking,
-            do_sample=request.do_sample,
-            temperature=request.temperature
-        )
-        
-        # Parse structured data from the answer
-        points, trajectory, bounding_boxes = parse_structured_data(result["answer"], request.task)
-        
-        response = InferenceResponse(
-            answer=result["answer"],
-            thinking=result.get("thinking"),
-            plot_path=None,
-            points=points,
-            trajectory=trajectory,
-            bounding_boxes=bounding_boxes
-        )
-        
-        return response
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Inference failed: {str(e)}")
-
-@app.post("/inference_with_upload", response_model=InferenceResponse)
-async def run_inference_with_upload(
-    text: str = Form(...),
-    task: str = Form("general"),
-    plot: bool = Form(False),
-    enable_thinking: Optional[bool] = Form(None),
-    do_sample: bool = Form(True),
-    temperature: float = Form(0.7),
-    files: List[UploadFile] = File(...)
-):
-    if inference_model is None:
-        raise HTTPException(status_code=500, detail="Model not initialized")
+    image = request.image
     
-    try:
-        temp_paths = []
-        for file in files:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
-                shutil.copyfileobj(file.file, tmp)
-                temp_paths.append(tmp.name)
-        
-        result = inference_model.inference(
-            text=text,
-            image=temp_paths,
-            task=task,
-            plot=plot,
-            enable_thinking=enable_thinking,
-            do_sample=do_sample,
-            temperature=temperature
+    brain_task = request.task if request.task != 'mask' else "pointing"
+    result = inference_model.inference(
+        text=request.text,
+        image=image,
+        task=brain_task,
+        plot=request.plot,
+        enable_thinking=request.enable_thinking,
+        do_sample=request.do_sample,
+        temperature=request.temperature
+    )
+    # Parse structured data from the answer
+    points, trajectory, bounding_boxes = parse_structured_data(result["answer"], brain_task)
+    print(request.task, result["answer"], points, trajectory, bounding_boxes)
+    
+    # get masks
+    if request.task == 'mask':
+        assert points is not None, "Points must be provided for mask task. Got answer: " + result["answer"]
+        sam2_predictor.set_image(read_image(image))
+        input_point = np.array(points)
+        input_label = np.array([1] * len(points)) # all positive points
+        masks, scores, _ = sam2_predictor.predict(
+            point_coords=input_point,
+            point_labels=input_label,
+            multimask_output=True,
         )
-        
-        for temp_path in temp_paths:
-            os.unlink(temp_path)
-        
-        # Parse structured data from the answer
-        points, trajectory, bounding_boxes = parse_structured_data(result["answer"], task)
-        
-        response = InferenceResponse(
-            answer=result["answer"],
-            thinking=result.get("thinking"),
-            plot_path=None,
-            points=points,
-            trajectory=trajectory,
-            bounding_boxes=bounding_boxes
-        )
-        
-        return response
-    except Exception as e:
-        for temp_path in temp_paths:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-        raise HTTPException(status_code=500, detail=f"Inference failed: {str(e)}")
+        sorted_ind = np.argsort(scores)[::-1]
+        masks = masks[sorted_ind]
+        # scores = scores[sorted_ind]
+        masks = masks.tolist()
+    
+    response = InferenceResponse(
+        answer=result["answer"],
+        thinking=result.get("thinking"),
+        points=points,
+        trajectory=trajectory,
+        bounding_boxes=bounding_boxes,
+        mask=masks if request.task == 'mask' else None
+    )
+    
+    return response
 
 @app.get("/health")
 async def health_check():

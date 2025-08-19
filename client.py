@@ -26,10 +26,10 @@ class RoboBrainClient:
         response.raise_for_status()
         return response.json()
     
-    def inference_with_urls(
+    def inference(
         self,
         text: str,
-        image_urls: List[str],
+        image: List[str],
         task: str = "general",
         plot: bool = False,
         enable_thinking: Optional[bool] = None,
@@ -38,7 +38,7 @@ class RoboBrainClient:
     ) -> Dict[str, Any]:
         data = {
             "text": text,
-            "image_urls": image_urls,
+            "image": image,
             "task": task,
             "plot": plot,
             "enable_thinking": enable_thinking,
@@ -48,82 +48,6 @@ class RoboBrainClient:
         response = self.session.post(f"{self.base_url}/inference", json=data)
         response.raise_for_status()
         return response.json()
-    
-    def inference_with_files(
-        self,
-        text: str,
-        image_paths: List[Union[str, Path]],
-        task: str = "general",
-        plot: bool = False,
-        enable_thinking: Optional[bool] = None,
-        do_sample: bool = True,
-        temperature: float = 0.7
-    ) -> Dict[str, Any]:
-        files = []
-        for path in image_paths:
-            path = Path(path)
-            if not path.exists():
-                raise FileNotFoundError(f"Image file not found: {path}")
-            files.append(("files", (path.name, open(path, "rb"), f"image/{path.suffix[1:]}")))
-        
-        data = {
-            "text": text,
-            "task": task,
-            "plot": plot,
-            "enable_thinking": enable_thinking,
-            "do_sample": do_sample,
-            "temperature": temperature
-        }
-        
-        try:
-            response = self.session.post(
-                f"{self.base_url}/inference_with_upload",
-                data=data,
-                files=files
-            )
-            response.raise_for_status()
-            return response.json()
-        finally:
-            for _, file_tuple in files:
-                file_tuple[1].close()
-    
-    def inference(
-        self,
-        text: str,
-        images: Union[List[str], List[Path]],
-        task: str = "general",
-        plot: bool = False,
-        enable_thinking: Optional[bool] = None,
-        do_sample: bool = True,
-        temperature: float = 0.7
-    ) -> Dict[str, Any]:
-        if not images:
-            raise ValueError("At least one image must be provided")
-        
-        first_image = images[0]
-        if isinstance(first_image, (str, Path)):
-            if isinstance(first_image, str) and first_image.startswith(("http://", "https://")):
-                return self.inference_with_urls(
-                    text=text,
-                    image_urls=images,
-                    task=task,
-                    plot=plot,
-                    enable_thinking=enable_thinking,
-                    do_sample=do_sample,
-                    temperature=temperature
-                )
-            else:
-                return self.inference_with_files(
-                    text=text,
-                    image_paths=images,
-                    task=task,
-                    plot=plot,
-                    enable_thinking=enable_thinking,
-                    do_sample=do_sample,
-                    temperature=temperature
-                )
-        else:
-            raise ValueError("Images must be file paths or URLs")
 
 if __name__ == "__main__":
     client = RoboBrainClient()
@@ -142,7 +66,7 @@ if __name__ == "__main__":
     print("Running inference...")
     result = client.inference(
         text=prompt,
-        images=[image_url],
+        image=[image_url],
         task="general",
         enable_thinking=True
     )
