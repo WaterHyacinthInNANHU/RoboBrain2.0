@@ -39,10 +39,10 @@ def test_service():
         elif task == "grounding":
             prompt = "pegs"
         elif task == "mask":
-            # prompt = "Please point out the best place to insert the pink peg"
-            # prompt = "There is a pink peg in the image. Please point out PLACES where the pink peg can NOT be placed STABLY"
-            prompt = "There is a pink peg in the image. Please point out FIXTURES that can be used to hold the peg for reorientating it"
-            # prompt = "There is a pink peg in the image. Please point out intermediate places to suitable to reorientate the peg "
+            # positive
+            # prompt = "Identify surfaces or regions in the image that are unsuitable for supporting the pink peg in a stable manner."
+            # negative
+            prompt = "Mark regions where the peg cannot stand without falling or not rigid enough to support the object."
         else:
             prompt = "Describe this image"
             
