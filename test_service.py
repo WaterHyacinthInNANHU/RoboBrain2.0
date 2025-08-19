@@ -11,7 +11,7 @@ import cv2
 def test_service():
     print("Testing RoboBrain2.0 Service and Client...")
     
-    client = RoboBrainClient()
+    client = RoboBrainClient('http://localhost:8000')
     
     print("\n1. Health check...")
     try:
