@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Union
 import uvicorn
 import tempfile
 import os
@@ -10,6 +10,8 @@ import argparse
 import re
 from dataclasses import dataclass
 from inference import UnifiedInference
+import base64
+from io import BytesIO
 
 import numpy as np
 from sam2.build_sam import build_sam2
@@ -24,17 +26,15 @@ MODEL_ID = "BAAI/RoboBrain2.0-7B"
 DEVICE_MAP = "auto"
 
 
-# @dataclass
 class InferenceRequest(BaseModel):
     text: str
-    image: str
+    image: Union[str, None] = None  # For URL or base64 encoded image
     task: str = "general"
     plot: bool = False
     enable_thinking: Optional[bool] = None
     do_sample: bool = True
     temperature: float = 0.7
     
-# @dataclass
 class InferenceResponse(BaseModel):
     answer: str
     thinking: Optional[str] = None
@@ -44,7 +44,6 @@ class InferenceResponse(BaseModel):
     bounding_boxes: Optional[List[List[int]]] = None  # For affordance/grounding: [[x1, y1, x2, y2], ...]
     mask: Optional[List[List[List[int]]]] = None  # For mask task
 
-# @dataclass
 class ModelConfig(BaseModel):
     model_id: str = "BAAI/RoboBrain2.0-7B"
     device_map: str = "auto"
@@ -68,6 +67,32 @@ async def lifespan(app: FastAPI):
     inference_model = None
 
 app = FastAPI(title="RoboBrain2.0 Inference Service", version="1.0.0", lifespan=lifespan)
+
+def save_uploaded_file(uploaded_file: UploadFile) -> str:
+    """Save uploaded file to temporary location and return path"""
+    # Create temp directory if it doesn't exist
+    temp_dir = "temp_uploads"
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    # Create unique filename
+    import uuid
+    file_extension = os.path.splitext(uploaded_file.filename)[1] if uploaded_file.filename else '.jpg'
+    temp_filename = f"{uuid.uuid4()}{file_extension}"
+    temp_path = os.path.join(temp_dir, temp_filename)
+    
+    # Save file
+    with open(temp_path, "wb") as buffer:
+        shutil.copyfileobj(uploaded_file.file, buffer)
+    
+    return temp_path
+
+def cleanup_temp_file(file_path: str):
+    """Clean up temporary file"""
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except Exception as e:
+        print(f"Warning: Could not clean up temp file {file_path}: {e}")
 
 def parse_structured_data(answer_text: str, task: str):
     """Extract structured data from answer text based on task type"""
@@ -145,7 +170,6 @@ async def run_inference(request: InferenceRequest):
         )
         sorted_ind = np.argsort(scores)[::-1]
         masks = masks[sorted_ind]
-        # scores = scores[sorted_ind]
         masks = masks.tolist()
     
     response = InferenceResponse(
@@ -158,6 +182,70 @@ async def run_inference(request: InferenceRequest):
     )
     
     return response
+
+@app.post("/inference_upload", response_model=InferenceResponse)
+async def run_inference_with_upload(
+    text: str = Form(...),
+    image: UploadFile = File(...),
+    task: str = Form("general"),
+    plot: bool = Form(False),
+    enable_thinking: Optional[bool] = Form(None),
+    do_sample: bool = Form(True),
+    temperature: float = Form(0.7)
+):
+    """Inference endpoint that accepts file uploads"""
+    if inference_model is None:
+        raise HTTPException(status_code=500, detail="Model not initialized")
+    
+    # Save uploaded file temporarily
+    temp_image_path = save_uploaded_file(image)
+    
+    try:
+        brain_task = task if task != 'mask' else "pointing"
+        result = inference_model.inference(
+            text=text,
+            image=temp_image_path,
+            task=brain_task,
+            plot=plot,
+            enable_thinking=enable_thinking,
+            do_sample=do_sample,
+            temperature=temperature
+        )
+        
+        # Parse structured data from the answer
+        points, trajectory, bounding_boxes = parse_structured_data(result["answer"], brain_task)
+        print(task, result["answer"], points, trajectory, bounding_boxes)
+        
+        # get masks
+        masks = None
+        if task == 'mask':
+            assert points is not None, "Points must be provided for mask task. Got answer: " + result["answer"]
+            sam2_predictor.set_image(read_image(temp_image_path))
+            input_point = np.array(points)
+            input_label = np.array([1] * len(points)) # all positive points
+            masks, scores, _ = sam2_predictor.predict(
+                point_coords=input_point,
+                point_labels=input_label,
+                multimask_output=True,
+            )
+            sorted_ind = np.argsort(scores)[::-1]
+            masks = masks[sorted_ind]
+            masks = masks.tolist()
+        
+        response = InferenceResponse(
+            answer=result["answer"],
+            thinking=result.get("thinking"),
+            points=points,
+            trajectory=trajectory,
+            bounding_boxes=bounding_boxes,
+            mask=masks
+        )
+        
+        return response
+        
+    finally:
+        # Clean up temporary file
+        cleanup_temp_file(temp_image_path)
 
 @app.get("/health")
 async def health_check():
